@@ -1,16 +1,82 @@
 name: Build plugins
+
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to publish (e.g. v0.1.0); leave empty to build artifacts only'
+        required: false
+        default: ''
+        type: string
+
 permissions:
   contents: read
+
+concurrency:
+  group: plugin-build-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.target.outputs.sha }}
+      tag: ${{ steps.target.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Resolve the exact source commit
+        id: target
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          tag="$REQUESTED_TAG"
+          if [[ "$EVENT_NAME" == push ]]; then
+            tag="$REF_NAME"
+          fi
+          if [[ -n "$tag" ]]; then
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+              echo '::error::Expected a version tag such as v0.1.0 or v0.1.1-rc.1.'
+              exit 1
+            fi
+            sha=$(git rev-parse --verify "refs/tags/${tag}^{commit}")
+          else
+            sha=$(git rev-parse HEAD)
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race ./...
+      - run: go vet ./...
+
   build:
+    needs: prepare
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         arch: [amd64, arm64, arm-7]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
       - run: bash scripts/build.sh "${{ matrix.arch }}"
       - name: Verify loading and notifications in official Gotify
         if: matrix.arch == 'amd64'
@@ -19,3 +85,71 @@ jobs:
         with:
           name: cloud-mail-webhook-linux-${{ matrix.arch }}
           path: build/*.so
+          if-no-files-found: error
+
+  release:
+    needs: [prepare, test, build]
+    if: needs.prepare.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cloud-mail-webhook-linux-*
+          merge-multiple: true
+          path: dist
+      - name: Verify assets and generate checksums
+        working-directory: dist
+        run: |
+          for arch in amd64 arm64 arm-7; do
+            test -s "cloud-mail-webhook-gotify-v3.1.1-linux-${arch}.so"
+          done
+          sha256sum ./*.so > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Publish complete release
+        run: |
+          # A rerun may resume an incomplete draft, but must not replace assets
+          # in a release that users have already downloaded.
+          if gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft > release-draft.txt; then
+            if [[ "$(cat release-draft.txt)" != true ]]; then
+              echo "Release $RELEASE_TAG is already published; leaving it unchanged."
+              exit 0
+            fi
+          else
+            cat > release-notes.md <<'NOTES'
+          ## 安装 / Installation
+
+          适用于官方 Docker 镜像 **gotify/server:3.1.1**，使用 **Go 1.26.0** 编译。
+          Built for the official **gotify/server:3.1.1** Docker image using **Go 1.26.0**.
+
+          - `linux-arm64.so`: ARM64 / aarch64
+          - `linux-arm-7.so`: 32-bit ARMv7 / armv7l
+          - `linux-amd64.so`: x86_64
+
+          只将匹配架构的一个 `.so` 放进 Gotify 插件目录，然后重启并在插件页面启用。
+          Install only the matching `.so` in Gotify's plugin directory, restart Gotify, and enable the plugin.
+          `SHA256SUMS` 用于校验下载文件，不要放入插件目录。
+          Use `SHA256SUMS` to verify downloads; do not put it in the plugin directory.
+
+          amd64 已通过官方 Gotify 容器端到端测试；ARM 文件由交叉编译生成，尚未进行 ARM 运行验证。
+          amd64 passes the official Gotify container end-to-end test. ARM builds are cross-compiled and have not been runtime-tested on ARM.
+
+          详细配置见仓库中的 README.md / README.en.md。
+          See README.md / README.en.md in the repository for configuration.
+          NOTES
+            printf '\nSource commit: `%s`\n' "$SOURCE_SHA" >> release-notes.md
+            gh release create "$RELEASE_TAG" --verify-tag --draft \
+              --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.so dist/SHA256SUMS --clobber
+          if [[ "${RELEASE_TAG%%+*}" == *-* ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          fi

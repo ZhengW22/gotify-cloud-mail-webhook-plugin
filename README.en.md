@@ -50,6 +50,22 @@ build/cloud-mail-webhook-gotify-v3.1.1-linux-arm64.so
 
 Before upgrading Gotify, check the new release's `GO_VERSION`, `go.mod`, and official Dockerfile. Update the compatibility snapshots, project dependencies, and build version, then rebuild and verify the plugin. See the [official plugin build documentation](https://gotify.net/docs/plugin-deploy).
 
+## Automated GitHub Actions releases
+
+The **Build plugins** workflow supports two release paths:
+
+- **Push a new tag:** pushing a version tag such as `v0.1.1` runs tests, builds amd64, ARM64, and ARMv7 plugins, and creates a GitHub Release containing the three `.so` files and `SHA256SUMS`.
+- **Publish an existing tag:** open Actions → Build plugins → Run workflow, select the `main` branch containing the updated workflow, and enter an existing tag such as `v0.1.0` in the `tag` input. Leave it empty to build artifacts without publishing a release.
+
+```bash
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin v0.1.1
+```
+
+Releases require successful tests and builds for all three architectures. amd64 also runs the official Gotify container end-to-end test; ARM runtime validation is not currently included. Tags with a prerelease suffix, such as `v0.1.1-rc.1`, are published as prereleases.
+
+Manual publication builds the exact commit referenced by the tag, rather than the latest `main` source. Reruns preserve already published releases and can resume drafts left by interrupted uploads. No additional personal access token is needed: the release job uses GitHub's built-in token with `contents: write` permission.
+
 ## Docker installation
 
 Create a `plugins` directory beside your existing Gotify Compose file. Place **only one `.so` matching your server architecture** in that directory. Do not include checksum files, READMEs, archives, or plugins for other architectures: Gotify attempts to load files from its plugin directory.

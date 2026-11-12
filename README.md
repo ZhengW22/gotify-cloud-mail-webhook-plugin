@@ -50,6 +50,22 @@ build/cloud-mail-webhook-gotify-v3.1.1-linux-arm64.so
 
 升级 Gotify 时，先核对新版本的 `GO_VERSION`、`go.mod` 及官方 Dockerfile，更新快照、项目依赖及构建版本，再重新构建和验证。参考 [官方插件构建说明](https://gotify.net/docs/plugin-deploy)。
 
+## GitHub Actions 自动发布
+
+**Build plugins** 工作流支持两种发布方式：
+
+- **推送新标签**：推送 `v0.1.1` 这类版本标签后，自动测试并构建 amd64、ARM64、ARMv7 插件，然后创建 GitHub Release，附带三个 `.so` 文件和 `SHA256SUMS`。
+- **补发已有标签**：在 Actions → Build plugins → Run workflow 中选择包含新工作流的 `main` 分支，`tag` 填写已有标签（例如 `v0.1.0`）。留空只构建 Artifacts，不发布 Release。
+
+```bash
+git tag -a v0.1.1 -m "Release v0.1.1"
+git push origin v0.1.1
+```
+
+所有测试和三个架构构建通过后才发布；amd64 额外进行官方 Gotify 容器端到端测试。目前没有 ARM 运行验证。带预发布后缀的标签（例如 `v0.1.1-rc.1`）会发布为 prerelease。
+
+手动补发使用该标签对应的源码提交，而不是直接用最新 `main` 的源码。重复运行会保留已公开的 Release；上传中断留下的草稿可以重试完成。无需额外配置个人访问 Token，发布任务使用 GitHub 内置令牌的 `contents: write` 权限。
+
 ## Docker 安装
 
 在现有 Gotify Compose 文件旁创建 `plugins` 目录，只把**一个匹配架构的 `.so`**放进去。校验文件、README、压缩包和其他架构插件不要放进插件目录，Gotify 会尝试加载目录内的文件。
