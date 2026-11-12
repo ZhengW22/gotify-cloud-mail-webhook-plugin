@@ -1,0 +1,6 @@
+/build/
+/.build-cache/
+/plugins/
+/gotify-data/
+/coverage.out
+*.so

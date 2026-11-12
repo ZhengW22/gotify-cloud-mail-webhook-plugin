@@ -1,0 +1,13 @@
+# Example for a NEW Gotify installation. For an existing server, only add the
+# plugins volume and GOTIFY_PLUGINSDIR; keep your existing data volume unchanged.
+services:
+  gotify:
+    image: gotify/server:3.1.1
+    ports:
+      - "127.0.0.1:8080:80"
+    environment:
+      GOTIFY_PLUGINSDIR: /app/plugins
+    volumes:
+      - ./gotify-data:/app/data
+      - ./plugins:/app/plugins:ro
+    restart: unless-stopped
